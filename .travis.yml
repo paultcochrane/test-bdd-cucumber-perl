@@ -14,6 +14,9 @@ install:
     - dzil authordeps --missing | cpanm || { cat ~/.cpanm/build.log ; false ; }
     - dzil listdeps --author --missing | cpanm || { cat ~/.cpanm/build.log ; false ; }
 
+script:
+    - HARNESS_PERL_SWITCHES=-MDevel::Cover=-coverage,statement,branch,condition,path,subroutine dzil test --author --release --keep
+
 # whitelist
 branches:
     only:
