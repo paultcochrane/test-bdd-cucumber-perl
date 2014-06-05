@@ -17,7 +17,7 @@ script:
     - HARNESS_PERL_SWITCHES=-MDevel::Cover=-coverage,statement,branch,condition,path,subroutine dzil test --author --release --keep
 
 after_success:
-    - cd .build/latest && cover && cover -report coveralls
+    - cd .build/latest && cover
 
 # whitelist
 branches:
