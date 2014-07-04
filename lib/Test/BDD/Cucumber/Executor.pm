@@ -15,11 +15,14 @@ use Moose;
 use FindBin::libs;
 use Storable qw(dclone);
 use List::Util qw/first/;
+use List::MoreUtils qw/pairwise/;
 use Test::Builder;
+use Number::Range;
 
 use Test::BDD::Cucumber::StepContext;
 use Test::BDD::Cucumber::Util;
 use Test::BDD::Cucumber::Model::Result;
+use Test::BDD::Cucumber::Errors qw/parse_error_from_line/;
 
 =head1 METHODS
 
@@ -228,7 +231,7 @@ sub execute_scenario {
         foreach my $step (@{ $outline->steps }) {
 
             # Multiply out any placeholders
-            my $text = $self->add_placeholders( $step->text, $dataset );
+            my $text = $self->add_placeholders( $step->text, $dataset, $step->line );
 
             # Set up a context
             my $context = Test::BDD::Cucumber::StepContext->new({
@@ -284,11 +287,11 @@ values in the hashref, returning a string.
 =cut
 
 sub add_placeholders {
-    my ( $self, $text, $dataset ) = @_;
+    my ( $self, $text, $dataset, $line ) = @_;
     my $quoted_text = Test::BDD::Cucumber::Util::bs_quote( $text );
     $quoted_text =~ s/(<([^>]+)>)/
         exists $dataset->{$2} ? $dataset->{$2} :
-            die "No mapping to placeholder $1 in: $text"
+            die parse_error_from_line( "No mapping to placeholder $1", $line )
     /eg;
     return Test::BDD::Cucumber::Util::bs_unquote( $quoted_text );
 }
@@ -361,23 +364,40 @@ sub dispatch {
     # Say we're about to start it up
     $context->harness->step( $context );
 
+    # Store the string position of matches for highlighting
+    my @match_locations;
+
     # New scope for the localization
     my $result;
     {
         # Localize test builder
         local $Test::Builder::Test = $tb_return->{'builder'};
-        # Guarantee the $<digits> :-/
-        $context->matches([ $context->text =~ $regular_expression ]);
 
         # Execute!
         eval {
             no warnings 'redefine';
+
+            # Set S and C to be step-specific values before executing the step
             local *Test::BDD::Cucumber::StepFile::S = sub {
                 return $context->stash->{'scenario'}
             };
             local *Test::BDD::Cucumber::StepFile::C = sub {
                 return $context
             };
+
+            # Take a copy of this. Turns out actually matching against it
+            # directly causes all sorts of weird-ass eisenbugs which mst has
+            # promised to investigate.
+            my $text = $context->text;
+
+            # Save the matches
+            $context->matches([ $text =~ $regular_expression ]);
+
+            # Save the location of matched subgroups for highlighting hijinks
+            my @starts = @-; my @ends = @+;
+            @match_locations = pairwise {[$a, $b]} @starts, @ends;
+
+            # OK, actually execute
             $coderef->( $context )
         };
         if ( $@ ) {
@@ -397,14 +417,58 @@ sub dispatch {
         });
 
     }
+
+    my @clean_matches = $self->_extract_match_strings(
+        $context->text, \@match_locations
+    );
+    @clean_matches = [ 0, $context->text ] unless @clean_matches;
+
     # Say the step is done, and return the result. Happens outside
     # the above block so that we don't have the localized harness
     # anymore...
     $context->harness->add_result( $result );
-    $context->harness->step_done( $context, $result );
+    $context->harness->step_done( $context, $result, \@clean_matches );
     return $result;
 }
 
+sub _extract_match_strings {
+    my ($self, $text, $locations) = @_;
+
+    # Clean up the match locations
+    my @match_locations = grep {
+            ( $_->[0] != $_->[1] ) && # No zero-length matches
+            # And nothing that matched the full string
+            (! (( $_->[0] == 0 ) && (( $_->[1] == length $text ) )))
+        } grep { defined $_ && ref $_ && defined $_->[0] && defined $_->[1] }
+        @$locations;
+
+    return unless @match_locations;
+
+    # Consolidate overlaps
+    my $range = Number::Range->new();
+
+    {
+        # Don't want a complain about numbers already in range, as that's
+        # expected for nested matches
+        no warnings;
+        $range->addrange($_->[0] . '..' . ($_->[1]-1) ) for @match_locations;
+    }
+
+    # Walk the string, splitting
+    my @parts = ([0,'']);
+    for ( 0 .. ((length $text) - 1) ) {
+        my $to_highlight = $range->inrange( $_ );
+        my $character = substr( $text, $_, 1 );
+
+        if ( $parts[-1]->[0] != $to_highlight ) {
+            push( @parts, [$to_highlight, ''] );
+        }
+
+        $parts[-1]->[1] .= $character;
+    }
+
+    return @parts;
+}
 
 sub _test_status {
     my $self    = shift;

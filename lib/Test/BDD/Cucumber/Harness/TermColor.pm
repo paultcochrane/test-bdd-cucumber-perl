@@ -29,7 +29,7 @@ BEGIN {
         (! $ENV{'DISABLE_WIN32_FALLBACK'} )
     ) {
         # Try and load
-        eval "require Win32::Console::ANSI";
+        eval { require Win32::Console::ANSI };
         if ( $@ ) {
             print "# Install Win32::Console::ANSI to display colors properly\n";
         }
@@ -37,20 +37,28 @@ BEGIN {
 }
 
 use Term::ANSIColor;
-use Test::BDD::Cucumber::Util;
 use Test::BDD::Cucumber::Model::Result;
 
 extends 'Test::BDD::Cucumber::Harness';
 
+has 'fh' => ( is => 'rw', isa => 'FileHandle', default => sub { \*STDOUT } );
+
 my $margin = 2;
-if ( $margin > 1 ) {
-    print "\n" x ( $margin - 1 );
+sub BUILD {
+    my $self = shift;
+    my $fh = $self->fh;
+
+    if ( $margin > 1 ) {
+        print $fh "\n" x ( $margin - 1 );
+    }
 }
 
 my $current_feature;
 
 sub feature {
     my ( $self, $feature ) = @_;
+    my $fh = $self->fh;
+
     $current_feature = $feature;
     $self->_display({
         indent    => 0,
@@ -61,7 +69,11 @@ sub feature {
     });
 }
 
-sub feature_done { print "\n"; }
+sub feature_done {
+    my $self = shift;
+    my $fh = $self->fh;
+    print $fh "\n";
+}
 
 sub scenario {
     my ( $self, $scenario, $dataset, $longest ) = @_;
@@ -78,11 +90,15 @@ sub scenario {
     });
 }
 
-sub scenario_done { print "\n"; }
+sub scenario_done {
+    my $self = shift;
+    my $fh = $self->fh;
+    print $fh "\n";
+}
 
 sub step {}
 sub step_done {
-    my ($self, $context, $result ) = @_;
+    my ($self, $context, $result, $highlights ) = @_;
 
     my $color;
     my $follow_up = [];
@@ -109,20 +125,23 @@ sub step_done {
 
     my $text;
 
-    if ( $context->is_hook )
-    {
+    if ( $context->is_hook ) {
         $color eq 'red' or return;
         $text = 'In ' . ucfirst( $context->verb ) . ' Hook';
-    }
-    else
-    {
+        undef $highlights;
+    } elsif ( $highlights ) {
         $text = $context->step->verb_original . ' ' . $context->text;
+        $highlights = [[ 0, $context->step->verb_original . ' ' ], @$highlights];
+    } else {
+        $text = $context->step->verb_original . ' ' . $context->text;
+        $highlights = [[ 0, $text ]];
     }
 
     $self->_display({
         indent    => 4,
         color     => $color,
         text      => $text,
+        highlights => $highlights,
         highlight => 'bright_cyan',
         trailing  => 0,
         follow_up => $follow_up,
@@ -164,46 +183,48 @@ sub _note_step_data {
 
 sub _display {
     my ( $class, $options ) = @_;
+    my $fh = ref $class ? $class->fh : \*STDOUT;
     $options->{'indent'} += $margin;
 
     # Reset it all...
-    print color 'reset';
+    print $fh color 'reset';
 
     # Print the main line
-    print ' ' x $options->{'indent'};
+    print $fh ' ' x $options->{'indent'};
 
     # Highlight as appropriate
     my $color = color $options->{'color'};
-    if ( $options->{'highlight'} ) {
+    if ( $options->{'highlight'} && $options->{'highlights'} ) {
         my $reset = color 'reset';
         my $base  = color $options->{'color'};
         my $hl    = color $options->{'highlight'};
 
-        my $text = $base . Test::BDD::Cucumber::Util::bs_quote( $options->{'text'} );
-        $text =~ s/("(.+?)"|[ ^](\d[-?\d\.]*))/$reset$hl$1$reset$base/g;
-        print Test::BDD::Cucumber::Util::bs_unquote( $text );
+        for ( @{$options->{'highlights'}} ) {
+            my ($flag, $text) = @$_;
+            print $fh $reset . ( $flag ? $hl : $base ) . $text . $reset;
+        }
 
     # Normal output
     } else {
-        print color $options->{'color'};
-        print $options->{'text'};
+        print $fh color $options->{'color'};
+        print $fh $options->{'text'};
     }
 
     # Reset and newline
-    print color 'reset';
-    print "\n";
+    print $fh color 'reset';
+    print $fh "\n";
 
     # Print follow-up lines...
     for my $line ( @{ $options->{'follow_up'} || [] } ) {
-        print color 'reset';
-        print ' ' x ( $options->{'indent'} + 2 );
-        print color $options->{'color'};
-        print $line;
-        print color 'reset';
-        print "\n";
+        print $fh color 'reset';
+        print $fh ' ' x ( $options->{'indent'} + 2 );
+        print $fh color $options->{'color'};
+        print $fh $line;
+        print $fh color 'reset';
+        print $fh "\n";
     }
 
-    print "\n" if $options->{'trailing'};
+    print $fh "\n" if $options->{'trailing'};
 }
 
 =head1 AUTHOR
